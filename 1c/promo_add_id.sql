@@ -1,0 +1,5 @@
+ALTER TABLE promo_codes
+    DROP PRIMARY KEY,
+    ADD COLUMN id INT UNSIGNED NOT NULL AUTO_INCREMENT FIRST,
+    ADD PRIMARY KEY (id),
+    ADD UNIQUE KEY uq_promo_code (code);
