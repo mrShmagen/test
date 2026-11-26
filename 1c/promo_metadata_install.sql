@@ -7,6 +7,6 @@ ALTER TABLE promo_codes
  ADD COLUMN valid_until DATE NULL,
  ADD COLUMN promo_type ENUM('gift','discount') NULL,
  ADD COLUMN discount_percent DECIMAL(5,2) NULL,
- ADD COLUMN product_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+ ADD COLUMN product_sku VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
  ADD COLUMN gift_quantity DECIMAL(10,3) NULL,
  ADD INDEX ix_promo_user (user_id);
