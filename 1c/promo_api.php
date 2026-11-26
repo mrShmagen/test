@@ -65,57 +65,16 @@ try {
     $action = $d['action'] ?? '';
     $code = $d['code'] ?? '';
     $token = $d['reservation_id'] ?? '';
-    if (!is_string($action) || !in_array($action,['create','create_batch','backfill','status','reserve','release','redeem'],true))
+    if (!is_string($action) || !in_array($action,['create','create_batch','status','reserve','release','redeem'],true))
         fail(400,'action','Неизвестная операция');
-    if (!in_array($action,['create_batch','backfill'],true) && (!is_string($code) || !preg_match('/\A[\p{Lu}\p{N}_-]{1,10}\z/u',$code)))
+    if ($action!=='create_batch' && (!is_string($code) || !preg_match('/\A[\p{Lu}\p{N}_-]{1,10}\z/u',$code)))
         fail(400,'code','Некорректный промокод');
     if (in_array($action,['reserve','release','redeem'],true) &&
         (!is_string($token) || !preg_match('/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i',$token)))
         fail(400,'token','Некорректный идентификатор резерва');
     $pdo = new PDO('mysql:host='.$cfg['host'].';dbname='.$cfg['database'].';charset=utf8mb4',
         $cfg['username'],$cfg['password'],[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION,PDO::ATTR_EMULATE_PREPARES=>false]);
-    $metadata=in_array($action,['create','create_batch'],true) ? promoMetadata($d) : null;
-    if ($action==='backfill') {
-        $items=$d['items'] ?? null;
-        if (!is_array($items) || count($items)<1 || count($items)>100 || array_keys($items)!==range(0,count($items)-1))
-            fail(400,'items','Допустимо от 1 до 100 записей');
-        $validated=[];
-        foreach ($items as $item) {
-            if (!is_array($item)) fail(400,'item','Некорректная запись');
-            $c=$item['code'] ?? '';
-            if (!is_string($c) || !preg_match('/\A[\p{Lu}\p{N}_-]{1,10}\z/u',$c))
-                fail(400,'code','Некорректный промокод');
-            if (isset($validated[$c])) fail(400,'duplicates','Повтор кода в запросе');
-            $m=promoMetadata($item);
-            if ($m===null) fail(400,'metadata','Нет параметров промокода');
-            $validated[$c]=$m;
-        }
-        ksort($validated,SORT_STRING);
-        $pdo->beginTransaction();
-        $select=$pdo->prepare('SELECT status,valid_from,valid_until,promo_type,discount_percent,product_sku,gift_quantity FROM promo_codes WHERE code=? FOR UPDATE');
-        $update=$pdo->prepare('UPDATE promo_codes SET valid_from=?,valid_until=?,promo_type=?,discount_percent=?,product_sku=?,gift_quantity=? WHERE code=?');
-        $counts=['updated'=>0,'unchanged'=>0,'missing'=>0,'protected'=>0,'conflict'=>0];
-        $issues=[];
-        foreach ($validated as $c=>$m) {
-            $c=(string)$c;
-            $select->execute([$c]);
-            $row=$select->fetch(PDO::FETCH_ASSOC);
-            if (!$row) { $reason='missing'; }
-            elseif ($row['status']!=='active') { $reason='protected'; }
-            else {
-                $old=[$row['valid_from'],$row['valid_until'],$row['promo_type'],$row['discount_percent'],$row['product_sku'],$row['gift_quantity']];
-                if ($old===$m) { $reason='unchanged'; }
-                elseif (count(array_filter($old,static function($v){return $v!==null;}))===0) {
-                    $update->execute(array_merge($m,[$c]));
-                    $reason='updated';
-                } else { $reason='conflict'; }
-            }
-            $counts[$reason]++;
-            if (in_array($reason,['missing','protected','conflict'],true)) $issues[]=['code'=>$c,'reason'=>$reason];
-        }
-        $pdo->commit();
-        reply(200,array_merge(['ok'=>true,'issues'=>$issues],$counts));
-    }
+    $metadata=in_array($action,['create','create_batch','reserve'],true) ? promoMetadata($d) : null;
     if ($action==='create_batch') {
         $id=$d['batch_id'] ?? '';
         $codes=$d['codes'] ?? null;
@@ -170,7 +129,7 @@ try {
         $q->execute($metadata===null ? [$code] : array_merge([$code],$metadata));
     }
     $pdo->beginTransaction();
-    $q=$pdo->prepare('SELECT status,reservation_id FROM promo_codes WHERE code=? FOR UPDATE');
+    $q=$pdo->prepare('SELECT status,reservation_id,valid_from,valid_until,promo_type,discount_percent,product_sku,gift_quantity FROM promo_codes WHERE code=? FOR UPDATE');
     $q->execute([$code]);
     $row=$q->fetch(PDO::FETCH_ASSOC);
     if (!$row) { $pdo->rollBack(); fail(404,'not_found','Промокод не зарегистрирован на сервере'); }
@@ -181,6 +140,21 @@ try {
         if ($state==='used') { $pdo->rollBack(); fail(409,'used','Промокод уже использован'); }
         if ($state==='reserved' && $owner!==$token) { $pdo->rollBack(); fail(409,'reserved','Промокод уже зарезервирован другой кассой'); }
         if ($state==='active') {
+            // Compare the exact terms that the cashier is about to apply.
+            // Legacy test codes without metadata remain compatible with the old API test.
+            $stored=[$row['valid_from'],$row['valid_until'],$row['promo_type'],$row['discount_percent'],$row['product_sku'],$row['gift_quantity']];
+            $hasMetadata=count(array_filter($stored,static function($v){return $v!==null;}))>0;
+            if ($hasMetadata || $metadata!==null) {
+                if ($metadata===null || $stored!==$metadata) {
+                    $pdo->rollBack();
+                    fail(409,'metadata_mismatch','Условия промокода не совпадают с сервером. Выполните обмен РИБ или проверьте настройки промокода.');
+                }
+                $today=(new DateTimeImmutable('now',new DateTimeZone('Europe/Moscow')))->format('Y-m-d');
+                if ($today<$row['valid_from'] || $today>$row['valid_until']) {
+                    $pdo->rollBack();
+                    fail(409,'expired','Срок действия промокода истек или еще не наступил');
+                }
+            }
             $q=$pdo->prepare("UPDATE promo_codes SET status='reserved',reservation_id=?,reserved_at=NOW() WHERE code=?");
             $q->execute([$token,$code]); $state='reserved';
         }
