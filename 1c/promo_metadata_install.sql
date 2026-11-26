@@ -2,7 +2,7 @@
 -- Существующие коды, резервы и история использования сохраняются.
 ALTER TABLE promo_codes
  MODIFY COLUMN status ENUM('active','reserved','used','disabled') NOT NULL DEFAULT 'active',
- ADD COLUMN user_id INT UNSIGNED NULL,
+ ADD COLUMN user_id INT(11) NULL DEFAULT NULL,
  ADD COLUMN valid_from DATE NULL,
  ADD COLUMN valid_until DATE NULL,
  ADD COLUMN promo_type ENUM('gift','discount') NULL,
