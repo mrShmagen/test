@@ -15,6 +15,42 @@ function fail(int $http, string $error, string $message): void {
 function success(string $state): void {
     reply(200, ['ok'=>true,'status'=>$state]);
 }
+
+// Metadata is optional for compatibility with existing RMK clients.
+// Never accept user_id or redemption state from a catalog creation request.
+function promoMetadata(array $d): ?array {
+    if (!array_key_exists('metadata',$d)) return null;
+    $m=$d['metadata'];
+    if (!is_array($m)) fail(400,'metadata','Некорректные параметры промокода');
+    $from=$m['valid_from'] ?? '';
+    $until=$m['valid_until'] ?? '';
+    foreach ([$from,$until] as $date) {
+        if (!is_string($date) || !preg_match('/\A[0-9]{4}-[0-9]{2}-[0-9]{2}\z/',$date))
+            fail(400,'date','Некорректная дата');
+        [$y,$mo,$day]=array_map('intval',explode('-',$date));
+        if ($y<1000 || !checkdate($mo,$day,$y)) fail(400,'date','Некорректная дата');
+    }
+    if ($until<$from) fail(400,'date','Некорректный период действия');
+    $type=$m['promo_type'] ?? '';
+    if ($type==='gift') {
+        $sku=$m['product_sku'] ?? '';
+        $qty=$m['gift_quantity'] ?? null;
+        if (!is_string($sku) || trim($sku)==='' || !preg_match('/\A[^\p{C}]{1,50}\z/u',$sku)
+            || !is_numeric($qty) || !is_finite((float)$qty) || (float)$qty<=0 || (float)$qty>9999999.999
+            || abs((float)$qty-round((float)$qty,3))>0.0000001)
+            fail(400,'gift','Некорректные параметры подарка');
+        return [$from,$until,$type,null,$sku,number_format((float)$qty,3,'.','')];
+    }
+    if ($type==='discount') {
+        $pct=$m['discount_percent'] ?? null;
+        if (!is_numeric($pct) || !is_finite((float)$pct) || (float)$pct<=0 || (float)$pct>100
+            || abs((float)$pct-round((float)$pct,2))>0.0000001)
+            fail(400,'discount','Некорректный процент скидки');
+        return [$from,$until,$type,number_format((float)$pct,2,'.',''),null,null];
+    }
+    fail(400,'type','Некорректный тип промокода');
+}
+
 try {
     $cfg = require __DIR__.'/config.php';
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') fail(405,'method','POST required');
@@ -38,6 +74,7 @@ try {
         fail(400,'token','Некорректный идентификатор резерва');
     $pdo = new PDO('mysql:host='.$cfg['host'].';dbname='.$cfg['database'].';charset=utf8mb4',
         $cfg['username'],$cfg['password'],[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION,PDO::ATTR_EMULATE_PREPARES=>false]);
+    $metadata=in_array($action,['create','create_batch'],true) ? promoMetadata($d) : null;
     if ($action==='create_batch') {
         $id=$d['batch_id'] ?? '';
         $codes=$d['codes'] ?? null;
@@ -53,7 +90,8 @@ try {
         if (count(array_unique($codes,SORT_STRING))!==count($codes))
             fail(400,'duplicates','Повторяющиеся коды внутри партии');
         sort($codes,SORT_STRING);
-        $hash=hash('sha256',json_encode($codes));
+        $legacyHash=hash('sha256',json_encode($codes));
+        $hash=$metadata===null ? $legacyHash : hash('sha256',json_encode([$codes,$metadata],JSON_UNESCAPED_UNICODE));
         $pdo->beginTransaction();
         // Serialize retries by the same batch ID. A committed row always means
         // that every code in this batch was inserted in the same transaction.
@@ -68,9 +106,9 @@ try {
             fail(409,'batch_mismatch','Идентификатор партии уже использован для другого набора кодов');
         }
         if ($new) {
-            $insert=$pdo->prepare('INSERT INTO promo_codes(code) VALUES (?)');
+            $insert=$pdo->prepare($metadata===null ? 'INSERT INTO promo_codes(code) VALUES (?)' : 'INSERT INTO promo_codes(code,valid_from,valid_until,promo_type,discount_percent,product_sku,gift_quantity) VALUES (?,?,?,?,?,?,?)');
             foreach ($codes as $c) {
-                try { $insert->execute([$c]); }
+                try { $insert->execute($metadata===null ? [$c] : array_merge([$c],$metadata)); }
                 catch (PDOException $e) {
                     if ((int)($e->errorInfo[1] ?? 0)===1062) {
                         $pdo->rollBack();
@@ -85,8 +123,10 @@ try {
     }
     if ($action==='create') {
         // Idempotent registration; never reset a reserved or used promo.
-        $q=$pdo->prepare('INSERT INTO promo_codes (code) VALUES (?) ON DUPLICATE KEY UPDATE code=code');
-        $q->execute([$code]);
+        $q=$pdo->prepare($metadata===null
+            ? 'INSERT INTO promo_codes(code) VALUES (?) ON DUPLICATE KEY UPDATE code=code'
+            : 'INSERT INTO promo_codes(code,valid_from,valid_until,promo_type,discount_percent,product_sku,gift_quantity) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE code=code');
+        $q->execute($metadata===null ? [$code] : array_merge([$code],$metadata));
     }
     $pdo->beginTransaction();
     $q=$pdo->prepare('SELECT status,reservation_id FROM promo_codes WHERE code=? FOR UPDATE');
@@ -96,6 +136,7 @@ try {
     $state=$row['status'];
     $owner=$row['reservation_id'];
     if ($action==='reserve') {
+        if ($state==='disabled') { $pdo->rollBack(); fail(409,'disabled','Промокод отключен'); }
         if ($state==='used') { $pdo->rollBack(); fail(409,'used','Промокод уже использован'); }
         if ($state==='reserved' && $owner!==$token) { $pdo->rollBack(); fail(409,'reserved','Промокод уже зарезервирован другой кассой'); }
         if ($state==='active') {
@@ -103,6 +144,7 @@ try {
             $q->execute([$token,$code]); $state='reserved';
         }
     } elseif ($action==='release') {
+        if ($state==='disabled') { $pdo->rollBack(); fail(409,'disabled','Промокод отключен'); }
         if ($state==='used') { $pdo->rollBack(); fail(409,'used','Использованный промокод нельзя освободить'); }
         if ($state==='reserved') {
             if ($owner!==$token) { $pdo->rollBack(); fail(409,'owner','Резерв принадлежит другой кассе'); }
