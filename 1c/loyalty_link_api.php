@@ -22,7 +22,7 @@ try {
     $d=json_decode($raw,true);
     $guid=$d['card_guid']??null;
     $owner=$d['owner_guid']??null;
-    if (!is_array($d)||($d['action']??'')!=='issue'||!is_string($guid)||
+    if (!is_array($d)||!in_array($d['action']??'', ['issue','status'],true)||!is_string($guid)||
         !preg_match('/\A[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\z/i',$guid)||!is_string($owner)||
         !preg_match('/\A[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\z/i',$owner))
         reply(400,['ok'=>false,'error'=>'request']);
@@ -38,6 +38,10 @@ try {
     }
     if (strtolower($card['owner_guid'])!==strtolower($owner)) {
         $pdo->rollBack();reply(409,['ok'=>false,'error'=>'owner_mismatch']);
+    }
+    if ($d['action']==='status') {
+        $linked=$card['user_id']!==null;
+        $pdo->commit();reply(200,['ok'=>true,'linked'=>$linked]);
     }
     if ($card['user_id']!==null) {
         $pdo->rollBack();reply(409,['ok'=>false,'error'=>'already_linked']);
