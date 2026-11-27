@@ -56,8 +56,8 @@ try {
     $inserted=false;
     for ($i=0;$i<12;$i++) {
         $code=str_pad((string)random_int(0,999999),6,'0',STR_PAD_LEFT);
-        // Bind the hash to card ID: redemption must also supply the card barcode.
-        $hash=hash_hmac('sha256',$id.':'.$code,$pepper,true);
+        // Globally unique code lookup, domain-separated from legacy hashes.
+        $hash=hash_hmac('sha256','link-v2:'.$code,$pepper,true);
         try {$q->execute([$id,$hash,$card['owner_guid']]);$inserted=true;break;}
         catch(PDOException $e){if ((int)($e->errorInfo[1]??0)!==1062) throw $e;}
     }
