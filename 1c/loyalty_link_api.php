@@ -21,8 +21,10 @@ try {
     if ($raw===false||strlen($raw)>4096) reply(413,['ok'=>false,'error'=>'size']);
     $d=json_decode($raw,true);
     $guid=$d['card_guid']??null;
+    $owner=$d['owner_guid']??null;
     if (!is_array($d)||($d['action']??'')!=='issue'||!is_string($guid)||
-        !preg_match('/\A[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\z/i',$guid))
+        !preg_match('/\A[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\z/i',$guid)||!is_string($owner)||
+        !preg_match('/\A[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\z/i',$owner))
         reply(400,['ok'=>false,'error'=>'request']);
     $pdo=new PDO('mysql:host='.$cfg['host'].';dbname='.$cfg['database'].';charset=utf8mb4',$cfg['username'],$cfg['password'],[
         PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION,PDO::ATTR_EMULATE_PREPARES=>false]);
@@ -33,6 +35,9 @@ try {
     $card=$q->fetch(PDO::FETCH_ASSOC);
     if (!$card||(int)$card['is_active']!==1||empty($card['owner_guid'])||empty($card['barcode'])||empty($card['phone'])) {
         $pdo->rollBack();reply(409,['ok'=>false,'error'=>'card_unavailable']);
+    }
+    if (strtolower($card['owner_guid'])!==strtolower($owner)) {
+        $pdo->rollBack();reply(409,['ok'=>false,'error'=>'owner_mismatch']);
     }
     if ($card['user_id']!==null) {
         $pdo->rollBack();reply(409,['ok'=>false,'error'=>'already_linked']);
