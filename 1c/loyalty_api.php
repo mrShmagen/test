@@ -67,10 +67,10 @@ try {
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON DUPLICATE KEY UPDATE
         is_active=IF(user_id IS NOT NULL AND NOT(owner_guid <=> VALUES(owner_guid)),0,VALUES(is_active)),
-        card_number=VALUES(card_number),barcode=VALUES(barcode),last_name=VALUES(last_name),
-        first_name=VALUES(first_name),middle_name=VALUES(middle_name),phone=VALUES(phone),
-        birth_date=VALUES(birth_date),loyalty_program=VALUES(loyalty_program),
-        cashback_percent=VALUES(cashback_percent),bonus_balance=VALUES(bonus_balance),
+        card_number=IF(user_id IS NOT NULL AND NOT(owner_guid <=> VALUES(owner_guid)),card_number,VALUES(card_number)),barcode=IF(user_id IS NOT NULL AND NOT(owner_guid <=> VALUES(owner_guid)),barcode,VALUES(barcode)),last_name=IF(user_id IS NOT NULL AND NOT(owner_guid <=> VALUES(owner_guid)),last_name,VALUES(last_name)),
+        first_name=IF(user_id IS NOT NULL AND NOT(owner_guid <=> VALUES(owner_guid)),first_name,VALUES(first_name)),middle_name=IF(user_id IS NOT NULL AND NOT(owner_guid <=> VALUES(owner_guid)),middle_name,VALUES(middle_name)),phone=IF(user_id IS NOT NULL AND NOT(owner_guid <=> VALUES(owner_guid)),phone,VALUES(phone)),
+        birth_date=IF(user_id IS NOT NULL AND NOT(owner_guid <=> VALUES(owner_guid)),birth_date,VALUES(birth_date)),loyalty_program=IF(user_id IS NOT NULL AND NOT(owner_guid <=> VALUES(owner_guid)),loyalty_program,VALUES(loyalty_program)),
+        cashback_percent=IF(user_id IS NOT NULL AND NOT(owner_guid <=> VALUES(owner_guid)),cashback_percent,VALUES(cashback_percent)),bonus_balance=IF(user_id IS NOT NULL AND NOT(owner_guid <=> VALUES(owner_guid)),bonus_balance,VALUES(bonus_balance)),
         owner_guid=IF(user_id IS NULL,VALUES(owner_guid),owner_guid),updated_at=NOW()');
     foreach ($rows as $row) $q->execute($row);
     $pdo->commit();
